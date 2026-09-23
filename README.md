@@ -35,6 +35,23 @@ uv run cutplanner serve design.scad inventory.yaml
 mise use -g pipx:uberbruns/cutplanner
 ```
 
+## Docker
+
+Build the image locally and mount a directory containing the OpenSCAD/BOM input
+and inventory file at `/data`:
+
+```sh
+docker build -t cutplanner:local .
+docker run --rm -p 16080:16080 \
+  -v "$PWD/examples:/data:ro" \
+  cutplanner:local /data/design.scad /data/inventory.yaml
+```
+
+The image includes OpenSCAD and runs as a non-root user. The server listens on
+port `16080` and binds to all interfaces. Replace the two paths after the image
+name with the files mounted in `/data`; a BOM YAML file can be used instead of
+the `.scad` input.
+
 ## Commands
 
 ### `cutplanner serve` — start the web server
