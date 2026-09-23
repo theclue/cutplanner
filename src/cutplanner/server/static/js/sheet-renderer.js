@@ -7,6 +7,119 @@ import { isPanelDone } from './panel-state.js';
 const dim = mm => Math.round(mm / 10 * 1000) / 1000;
 
 /**
+ * Calibrated text-width estimate for SVG labels.
+ * The result is in the same viewBox units as fontSize (the renderer uses mm).
+ * @param {string} text
+ * @param {number} fontSize
+ * @returns {number}
+ */
+export function estimateTextWidth(text, fontSize) {
+    const value = String(text);
+    const measuredWidths = estimateTextWidth.cache;
+    const cachedWidth = measuredWidths.get(value);
+    if (cachedWidth !== undefined) {
+        return cachedWidth * fontSize;
+    }
+
+    const canvas = globalThis.document?.createElement?.('canvas');
+    if (!canvas) {
+        return [...value].length * 0.6 * fontSize;
+    }
+
+    const context = canvas.getContext('2d');
+    if (!context) {
+        return [...value].length * 0.6 * fontSize;
+    }
+
+    const font = 'bold 100px Arial';
+    context.font = font;
+    const normalizedWidth = context.measureText(value).width / 100;
+    measuredWidths.set(value, normalizedWidth);
+    return normalizedWidth * fontSize;
+}
+
+estimateTextWidth.cache = new Map();
+
+function labelFit(text, textLength, crossLength, padding, maxFontSize, minFontSize) {
+    const availableLength = Math.max(1, textLength - padding * 2);
+    const availableCross = Math.max(1, crossLength - padding * 2);
+    const widthLimited = availableLength / Math.max(1, estimateTextWidth(text, 1));
+    const heightLimited = availableCross / 1.1;
+    const fontSize = Math.min(maxFontSize, widthLimited, heightLimited);
+
+    return { fontSize, availableLength, availableCross };
+}
+
+const PANEL_LABEL_MAX_FONT_SIZE = 20;
+const ROTATION_IMPROVEMENT_THRESHOLD = 0.2;
+
+/**
+ * Choose the label orientation and the largest safe font size for a panel.
+ * Text follows the panel's larger dimension; a square is intentionally kept
+ * horizontal for visual compatibility with the existing renderer.
+ * @param {string} name
+ * @param {number} width Panel width in mm
+ * @param {number} height Panel height in mm
+ * @returns {{text: string, fontSize: number, rotation: number, showDimensions: boolean}}
+ */
+export function fitPanelLabel(name, width, height) {
+    const maxFontSize = PANEL_LABEL_MAX_FONT_SIZE;
+    const minFontSize = 6;
+    const padding = 8;
+    const fullText = String(name);
+    const dimensionText = `${dim(width)} × ${dim(height)} cm`;
+
+    const candidate = (text, textLength, crossLength, rotation) => {
+        const fit = labelFit(text, textLength, crossLength, padding, maxFontSize, minFontSize);
+        const fontSize = fit.fontSize;
+        const dimensionFontSize = fontSize * 0.72;
+        const dimensionHeight = dimensionFontSize * 1.1;
+        const dimensionOffset = fontSize * 1.35;
+        const dimensionBudget = fontSize * 1.1 + dimensionOffset + dimensionHeight;
+        const showDimensions = fit.availableCross >= dimensionBudget &&
+            estimateTextWidth(dimensionText, dimensionFontSize) <= fit.availableLength;
+
+        return {
+            text,
+            fontSize,
+            rotation,
+            showDimensions,
+            availableLength: fit.availableLength,
+            canFit: estimateTextWidth(text, minFontSize) <= fit.availableLength,
+        };
+    };
+
+    const horizontal = candidate(fullText, width, height, 0);
+    const ccw = candidate(fullText, height, width, -90);
+    // Keep horizontal text unless CCW improves the usable font size by at least 20%.
+    const useCCW = ccw.canFit && (!horizontal.canFit ||
+        ccw.fontSize >= horizontal.fontSize * (1 + ROTATION_IMPROVEMENT_THRESHOLD));
+    const selected = useCCW ? ccw : horizontal;
+
+    if (selected.canFit && selected.fontSize >= minFontSize) {
+        return selected;
+    }
+
+    // Ellipses are only a last resort; recalculate the fit for the shortened string.
+    let truncated = '…';
+    for (let length = 1; length <= fullText.length; length++) {
+        const next = `${fullText.slice(0, length)}…`;
+        if (estimateTextWidth(next, minFontSize) <= selected.availableLength) {
+            truncated = next;
+        } else {
+            break;
+        }
+    }
+    const recalculated = candidate(
+        truncated,
+        useCCW ? height : width,
+        useCCW ? width : height,
+        selected.rotation,
+    );
+    return { ...recalculated, fontSize: Math.max(minFontSize, recalculated.fontSize), text: truncated };
+}
+
+/**
  * Render unpacked panels warning section
  * @param {Array} unpackedPanels - Array of panel objects that couldn't be placed
  * @returns {string} HTML string
@@ -125,7 +238,7 @@ ${dim(panelWidth)} cm × ${dim(panelHeight)} cm</title>
  * @param {Object} placedPanel - Placed panel object from API
  * @returns {string} SVG text elements as string
  */
-function createPanelText(placedPanel) {
+function createPanelText(placedPanel, panelId) {
     const { panel, x, y, rotated } = placedPanel;
 
     const panelWidth = rotated ? panel.length : panel.width;
@@ -133,27 +246,34 @@ function createPanelText(placedPanel) {
 
     const textX = x + panelWidth / 2;
     const textY = y + panelHeight / 2;
-    const rotation = rotated ? "90" : "0";
+    const fit = fitPanelLabel(panel.name, panelWidth, panelHeight);
+    const rotation = fit.rotation;
+    const transform = `rotate(${rotation} ${textX} ${textY})`;
+    const clipPath = `url(#panel-clip-${panelId})`;
+    const dimensionFontSize = fit.fontSize * 0.72;
+    const dimensionOffset = fit.fontSize * 1.35;
 
-    // Truncate long panel names
-    const displayName = panel.name.length > 20 ? panel.name.substring(0, 20) : panel.name;
+    const transformAttribute = rotation ? ` transform="${transform}"` : '';
 
     return `
-        <text class="panel-text"
-              x="${textX}"
-              y="${textY}"
-              text-anchor="middle"
-              dominant-baseline="middle"
-              transform="rotate(${rotation} ${textX} ${textY})">
-            ${displayName}
-        </text>
-        <text class="dimension-text"
-              x="${textX}"
-              y="${textY + 45}"
-              text-anchor="middle"
-              transform="rotate(${rotation} ${textX} ${textY})">
-            ${dim(panelWidth)} × ${dim(panelHeight)} cm
-        </text>
+        <g clip-path="${clipPath}">
+            <text class="panel-text"
+                  x="${textX}"
+                  y="${textY}"
+                  font-size="${fit.fontSize}"
+                  text-anchor="middle"
+                  dominant-baseline="middle"${transformAttribute}>
+                ${fit.text}
+            </text>
+            ${fit.showDimensions ? `<text class="dimension-text"
+                  x="${textX}"
+                  y="${textY + dimensionOffset}"
+                  font-size="${dimensionFontSize}"
+                  text-anchor="middle"
+                  ${transformAttribute}>
+                ${dim(panelWidth)} × ${dim(panelHeight)} cm
+            </text>` : ''}
+        </g>
     `;
 }
 
@@ -188,7 +308,7 @@ export function renderSheet(sheet, startPanelId) {
     for (const placedPanel of sheet.placed_panels) {
         panelDefs.push(createPanelDef(placedPanel, panelId));
         panelRects.push(createPanelRect(placedPanel, panelId));
-        panelTexts.push(createPanelText(placedPanel));
+        panelTexts.push(createPanelText(placedPanel, panelId));
         panelId++;
     }
 

@@ -209,14 +209,12 @@ svg {
 
 .panel-text {
     fill: white;
-    font-size: 36px;
     font-weight: bold;
     pointer-events: none;
 }
 
 .dimension-text {
     fill: #333;
-    font-size: 30px;
     pointer-events: none;
 }
 
