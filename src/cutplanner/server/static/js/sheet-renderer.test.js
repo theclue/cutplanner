@@ -10,32 +10,48 @@ globalThis.localStorage = {
 test('keeps a wide panel horizontal and sizes the label in viewBox units', () => {
     const fit = fitPanelLabel('Shelf', 500, 100);
     assert.equal(fit.rotation, 0);
-    assert.ok(fit.fontSize <= 12);
+    assert.ok(fit.fontSize <= 20);
+    assert.ok(fit.fontSize > 12);
+});
+
+test('keeps a tall panel horizontal when its width is sufficient', () => {
+    const fit = fitPanelLabel('Shelf', 300, 500);
+    assert.equal(fit.rotation, 0);
+    assert.equal(fit.text, 'Shelf');
 });
 
 test('rotates a narrow, tall panel CCW with complete labels', () => {
-    const fit = fitPanelLabel('Zoccolo fronte', 100, 500);
+    const fit = fitPanelLabel('Zoccolo fronte', 70, 764);
     assert.equal(fit.rotation, -90);
     assert.equal(fit.text, 'Zoccolo fronte');
-    assert.ok(fit.fontSize <= 12);
-    assert.equal(fitPanelLabel('Traversa retro', 100, 500).text, 'Traversa retro');
+    assert.equal(fit.fontSize, 20);
+    assert.equal(fitPanelLabel('Traversa retro', 60, 764).rotation, -90);
+    assert.equal(fitPanelLabel('Traversa retro', 60, 764).fontSize, 20);
+    assert.equal(fitPanelLabel('Traversa retro', 60, 764).showDimensions, false);
+});
+
+test('keeps a wide side panel horizontal with dimensions', () => {
+    const fit = fitPanelLabel('Fianco Dx', 274, 1900);
+    assert.equal(fit.rotation, 0);
+    assert.equal(fit.fontSize, 20);
+    assert.equal(fit.showDimensions, true);
 });
 
 test('keeps a square panel horizontal', () => {
     assert.equal(fitPanelLabel('Shelf', 200, 200).rotation, 0);
 });
 
-test('rotation candidate remains within the visual font cap', () => {
+test('rotates only when the CCW improvement exceeds the explicit threshold', () => {
     const rotated = fitPanelLabel('Zoccolo fronte', 100, 500);
-    const horizontal = fitPanelLabel('Zoccolo fronte', 100, 100);
+    const horizontalEnough = fitPanelLabel('Zoccolo fronte', 300, 500);
     assert.equal(rotated.rotation, -90);
-    assert.ok(rotated.fontSize >= horizontal.fontSize);
-    assert.ok(rotated.fontSize <= 12);
+    assert.equal(horizontalEnough.rotation, 0);
+    assert.ok(rotated.fontSize <= 20);
 });
 
 test('reduces the font before truncating a label', () => {
     const fit = fitPanelLabel('A very long panel name', 160, 80);
-    assert.ok(fit.fontSize <= 12);
+    assert.ok(fit.fontSize <= 20);
     assert.doesNotMatch(fit.text, /…$/);
 });
 
@@ -64,7 +80,8 @@ test('emits CCW rotation and clip paths without legacy clockwise rotation', () =
     }, 1);
 
     assert.match(html, /rotate\(-90 /);
-    assert.match(html, /clip-path="url\(#panel-clip-1\)"/);
+    assert.match(html, /<g clip-path="url\(#panel-clip-1\)">/);
+    assert.doesNotMatch(html, /<text[^>]+clip-path=/);
     assert.doesNotMatch(html, /rotate\(90 /);
 });
 

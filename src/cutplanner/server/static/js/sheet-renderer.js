@@ -7,15 +7,38 @@ import { isPanelDone } from './panel-state.js';
 const dim = mm => Math.round(mm / 10 * 1000) / 1000;
 
 /**
- * Conservative, deterministic text-width estimate for SVG labels.
+ * Calibrated text-width estimate for SVG labels.
  * The result is in the same viewBox units as fontSize (the renderer uses mm).
  * @param {string} text
  * @param {number} fontSize
  * @returns {number}
  */
 export function estimateTextWidth(text, fontSize) {
-    return [...String(text)].length * fontSize * 0.68;
+    const value = String(text);
+    const measuredWidths = estimateTextWidth.cache;
+    const cachedWidth = measuredWidths.get(value);
+    if (cachedWidth !== undefined) {
+        return cachedWidth * fontSize;
+    }
+
+    const canvas = globalThis.document?.createElement?.('canvas');
+    if (!canvas) {
+        return [...value].length * 0.6 * fontSize;
+    }
+
+    const context = canvas.getContext('2d');
+    if (!context) {
+        return [...value].length * 0.6 * fontSize;
+    }
+
+    const font = 'bold 100px Arial';
+    context.font = font;
+    const normalizedWidth = context.measureText(value).width / 100;
+    measuredWidths.set(value, normalizedWidth);
+    return normalizedWidth * fontSize;
 }
+
+estimateTextWidth.cache = new Map();
 
 function labelFit(text, textLength, crossLength, padding, maxFontSize, minFontSize) {
     const availableLength = Math.max(1, textLength - padding * 2);
@@ -27,6 +50,9 @@ function labelFit(text, textLength, crossLength, padding, maxFontSize, minFontSi
     return { fontSize, availableLength, availableCross };
 }
 
+const PANEL_LABEL_MAX_FONT_SIZE = 20;
+const ROTATION_IMPROVEMENT_THRESHOLD = 0.2;
+
 /**
  * Choose the label orientation and the largest safe font size for a panel.
  * Text follows the panel's larger dimension; a square is intentionally kept
@@ -37,7 +63,7 @@ function labelFit(text, textLength, crossLength, padding, maxFontSize, minFontSi
  * @returns {{text: string, fontSize: number, rotation: number, showDimensions: boolean}}
  */
 export function fitPanelLabel(name, width, height) {
-    const maxFontSize = 12;
+    const maxFontSize = PANEL_LABEL_MAX_FONT_SIZE;
     const minFontSize = 6;
     const padding = 8;
     const fullText = String(name);
@@ -45,7 +71,7 @@ export function fitPanelLabel(name, width, height) {
 
     const candidate = (text, textLength, crossLength, rotation) => {
         const fit = labelFit(text, textLength, crossLength, padding, maxFontSize, minFontSize);
-        const fontSize = Math.max(minFontSize, fit.fontSize);
+        const fontSize = fit.fontSize;
         const dimensionFontSize = fontSize * 0.72;
         const dimensionHeight = dimensionFontSize * 1.1;
         const dimensionOffset = fontSize * 1.35;
@@ -53,16 +79,24 @@ export function fitPanelLabel(name, width, height) {
         const showDimensions = fit.availableCross >= dimensionBudget &&
             estimateTextWidth(dimensionText, dimensionFontSize) <= fit.availableLength;
 
-        return { text, fontSize, rotation, showDimensions, availableLength: fit.availableLength };
+        return {
+            text,
+            fontSize,
+            rotation,
+            showDimensions,
+            availableLength: fit.availableLength,
+            canFit: estimateTextWidth(text, minFontSize) <= fit.availableLength,
+        };
     };
 
     const horizontal = candidate(fullText, width, height, 0);
     const ccw = candidate(fullText, height, width, -90);
-    // A square or an equivalent fit stays horizontal as the deterministic tie-break.
-    const useCCW = height > width && ccw.fontSize > horizontal.fontSize;
+    // Keep horizontal text unless CCW improves the usable font size by at least 20%.
+    const useCCW = ccw.canFit && (!horizontal.canFit ||
+        ccw.fontSize >= horizontal.fontSize * (1 + ROTATION_IMPROVEMENT_THRESHOLD));
     const selected = useCCW ? ccw : horizontal;
 
-    if (selected.fontSize > minFontSize || estimateTextWidth(fullText, minFontSize) <= selected.availableLength) {
+    if (selected.canFit && selected.fontSize >= minFontSize) {
         return selected;
     }
 
@@ -82,7 +116,7 @@ export function fitPanelLabel(name, width, height) {
         useCCW ? width : height,
         selected.rotation,
     );
-    return { ...recalculated, text: truncated };
+    return { ...recalculated, fontSize: Math.max(minFontSize, recalculated.fontSize), text: truncated };
 }
 
 /**
@@ -219,26 +253,27 @@ function createPanelText(placedPanel, panelId) {
     const dimensionFontSize = fit.fontSize * 0.72;
     const dimensionOffset = fit.fontSize * 1.35;
 
+    const transformAttribute = rotation ? ` transform="${transform}"` : '';
+
     return `
-        <text class="panel-text"
-              x="${textX}"
-              y="${textY}"
-              font-size="${fit.fontSize}"
-              text-anchor="middle"
-              dominant-baseline="middle"
-              clip-path="${clipPath}"
-              transform="${transform}">
-            ${fit.text}
-        </text>
-        ${fit.showDimensions ? `<text class="dimension-text"
-              x="${textX}"
-              y="${textY + dimensionOffset}"
-              font-size="${dimensionFontSize}"
-              text-anchor="middle"
-              clip-path="${clipPath}"
-              transform="${transform}">
-            ${dim(panelWidth)} × ${dim(panelHeight)} cm
-        </text>` : ''}
+        <g clip-path="${clipPath}">
+            <text class="panel-text"
+                  x="${textX}"
+                  y="${textY}"
+                  font-size="${fit.fontSize}"
+                  text-anchor="middle"
+                  dominant-baseline="middle"${transformAttribute}>
+                ${fit.text}
+            </text>
+            ${fit.showDimensions ? `<text class="dimension-text"
+                  x="${textX}"
+                  y="${textY + dimensionOffset}"
+                  font-size="${dimensionFontSize}"
+                  text-anchor="middle"
+                  ${transformAttribute}>
+                ${dim(panelWidth)} × ${dim(panelHeight)} cm
+            </text>` : ''}
+        </g>
     `;
 }
 
